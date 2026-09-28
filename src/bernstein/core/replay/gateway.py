@@ -139,10 +139,7 @@ class ReplayDivergenceError(RuntimeError):
                 "recording exhausted (no remaining events of this kind)"
             )
         else:
-            message = (
-                f"replay divergence: kind={kind!r} got key={got_key!r} "
-                f"expected key={expected_key!r}"
-            )
+            message = f"replay divergence: kind={kind!r} got key={got_key!r} expected key={expected_key!r}"
         super().__init__(message)
 
 
