@@ -5,13 +5,13 @@ Spec: [NIST AI Risk Management Framework (AI RMF 1.0)](https://doi.org/10.6028/N
 January 2023. Subcategory ids follow the Playbook numbering
 (`GOVERN 1.1` … `MANAGE 4.3`).
 
-This document is the first slice of issue #4915: an honest cross-walk from
-each Core subcategory to what bernstein already records or enforces in the
-chain. It is **not** a certification claim and **not** the `ai-rmf` compliance
-pack (that follows once this table is agreed).
+This document is the subcategory crosswalk for issue #4915. The
+`bernstein compliance pack ai-rmf` command projects these rows onto a chain
+window. It is **not** a certification claim.
 
-The Generative AI Profile action items are out of scope for this PR; they will
-fold onto these rows later rather than becoming a second document.
+Generative AI Profile (NIST.AI.600-1) suggested actions fold onto these same
+subcategory rows (`genai_profile_ref` in the pack). They are not a second
+document.
 
 ## Verdict vocabulary
 
