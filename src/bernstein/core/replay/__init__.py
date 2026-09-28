@@ -43,12 +43,15 @@ from bernstein.core.replay.fork import (
 )
 from bernstein.core.replay.gateway import (
     EVENTS_FILENAME,
+    LENIENT_ENV_VAR,
     RECORD_ENV_VAR,
     GatewayMode,
+    ReplayDivergenceError,
     ReplayGateway,
     ReplayKeySchemeMismatchError,
     ReplayMissError,
     is_recording_enabled,
+    is_replay_lenient,
 )
 from bernstein.core.replay.journal import (
     JOURNAL_FILENAME,
@@ -133,6 +136,7 @@ __all__ = [
     "CURRENT_KEY_SCHEME",
     "EVENTS_FILENAME",
     "JOURNAL_FILENAME",
+    "LENIENT_ENV_VAR",
     "MUTATION_CAPABILITY_EVENT",
     "PROVIDER_STATE_CAPTURE_FAILED_EVENT",
     "PROVIDER_STATE_MUTATION_EVENT",
@@ -149,6 +153,7 @@ __all__ = [
     "ProviderStateVerifyResult",
     "ReadPathDerivationError",
     "ReadPathSet",
+    "ReplayDivergenceError",
     "ReplayGateway",
     "ReplayKeySchemeMismatchError",
     "ReplayMissError",
@@ -161,6 +166,7 @@ __all__ = [
     "diff_event_logs",
     "fork_run",
     "is_recording_enabled",
+    "is_replay_lenient",
     "load_events",
     "locate_run",
     "parse_stored_key",
