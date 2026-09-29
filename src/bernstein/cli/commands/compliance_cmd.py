@@ -955,7 +955,11 @@ def pack_incident(
     "--mapping",
     default=None,
     type=click.Path(path_type=Path),
-    help="Override the NIST AI RMF mapping markdown.",
+    help=(
+        "NIST AI RMF mapping markdown. Defaults to docs/compliance/nist-ai-rmf-mapping.md "
+        "under --workdir, which exists in a source checkout only; an installed package "
+        "must pass this explicitly."
+    ),
 )
 @click.option("--operator-key", default=None, type=click.Path(path_type=Path), help="Override operator signing key.")
 def pack_ai_rmf(

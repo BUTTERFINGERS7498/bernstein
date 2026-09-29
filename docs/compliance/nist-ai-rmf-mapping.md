@@ -7,7 +7,10 @@ January 2023. Subcategory ids follow the Playbook numbering
 
 This document is the subcategory crosswalk for issue #4915. The
 `bernstein compliance pack ai-rmf` command projects these rows onto a chain
-window. It is **not** a certification claim.
+window. It is **not** a certification claim. The command reads this file from
+`docs/compliance/` under `--workdir` by default, which only exists in a source
+checkout; an installed package has to pass `--mapping` explicitly. The pack
+records the SHA-256 of the file it used as `mapping_sha256`.
 
 Generative AI Profile (NIST.AI.600-1) suggested actions fold onto these same
 subcategory rows (`genai_profile_ref` in the pack). They are not a second

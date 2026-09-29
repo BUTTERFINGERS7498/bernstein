@@ -12,6 +12,7 @@ profile publishes its suggested actions.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -40,6 +41,17 @@ _VERDICT_RE = re.compile(r"\b(Covered|Partial|Not-covered)\b")
 #: Path tokens that tie a Covered subcategory to chain entries. A row marked
 #: Covered in the mapping and missing from this map cannot be evidenced; the
 #: pack test fails closed on that drift.
+#:
+#: Rows share tokens on purpose (``denial``, ``incident``, ``quarantine``,
+#: ``audit-chain``, ``sbom``, ``dlp``, ``data-residency``, ``plan-approval``):
+#: each row is matched independently, so one quarantine entry evidences
+#: GOVERN-4.3, MANAGE-2.3 and MANAGE-2.4 at once.
+#:
+#: This table is agreement, not verification. None of the modules the mapping
+#: names writes to the lineage log, and no in-tree lineage producer emits an
+#: entry these tokens match today.
+#: ``test_covered_row_evidences_from_real_producer_events`` records that per
+#: row and turns red when a producer starts emitting one.
 COVERED_EVIDENCE_SELECTORS: dict[str, tuple[str, ...]] = {
     "GOVERN-3.2": ("approval", "plan-approval", "oversight-gate"),
     "GOVERN-4.3": ("incident", "denial", "quarantine"),
@@ -90,6 +102,14 @@ def parse_mapping_rows(text: str) -> list[dict[str, str]]:
 
 
 def _matches(entry: LineageEntry, tokens: tuple[str, ...]) -> bool:
+    """Return whether any token is a substring of the entry's path or kind.
+
+    Matching is literal and case-insensitive substring, with no path-segment
+    boundary: ``approval`` matches ``pre-approval-bypass``, and a source edit
+    whose path merely contains a token (``src/app/approval.py``) counts the
+    same as a control record. The verifier cannot tell the two apart, so a
+    selector token is a claim about every path that contains it.
+    """
     haystack = f"{entry.artefact_path} {entry.artefact_kind}".lower()
     return any(token in haystack for token in tokens)
 
@@ -109,9 +129,17 @@ def _readme(*, org: str, since: date, until: date, claim: str, entry_count: int)
         f"**Lineage entries in period:** {entry_count}\n"
         f"**Window claim:** {claim}\n\n"
         "One artefact for the four AI RMF functions (GOVERN, MAP, MEASURE,\n"
-        "MANAGE). Covered subcategories carry the chain entries that match\n"
-        "their mechanism. `empty` and `unmatched` windows are valid packs and\n"
-        "do not claim those rows were evidenced.\n\n"
+        "MANAGE). Each Covered subcategory is judged on its own and carries\n"
+        "the chain entries that match its mechanism; the window claim is\n"
+        "`evidenced` when at least one row carries entries, so other Covered\n"
+        "rows in the same pack can still show `evidenced: false`. `empty` and\n"
+        "`unmatched` windows are valid packs and do not claim those rows were\n"
+        "evidenced.\n\n"
+        "Partial rows carry `evidenced: false` and no chain entries: the\n"
+        "mapping says the control exists but does not reach the whole row.\n"
+        "Not-covered rows carry none either.\n\n"
+        "`mapping_sha256` in `subcategory-evidence.json` is the SHA-256 of the\n"
+        "crosswalk file that projected this pack.\n\n"
         "Generative AI Profile (NIST.AI.600-1) suggested actions are read\n"
         "against `genai_profile_ref` on the same Core subcategory row. This\n"
         "pack is not a second control catalogue and not a certification.\n\n"
@@ -137,7 +165,8 @@ def build_ai_rmf_pack(
 ) -> Path:
     """Assemble one sealed NIST AI RMF pack for ``[since, until]``."""
     build_started_at = datetime.now(UTC).isoformat(timespec="seconds")
-    mapping_rows = parse_mapping_rows(mapping_path.read_text(encoding="utf-8"))
+    mapping_bytes = mapping_path.read_bytes()
+    mapping_rows = parse_mapping_rows(mapping_bytes.decode("utf-8"))
 
     all_entries = _read_entries(lineage_dir / "log.jsonl")
     filtered = _filter_entries(all_entries, since, until)
@@ -171,6 +200,7 @@ def build_ai_rmf_pack(
         "period": {"since": since.isoformat(), "until": until.isoformat()},
         "entry_count": len(ordered),
         "window_claim": claim,
+        "mapping_sha256": hashlib.sha256(mapping_bytes).hexdigest(),
         "rows": evidence_rows,
     }
     evidence_bytes = _canonical_json(evidence)

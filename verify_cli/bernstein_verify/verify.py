@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -794,6 +795,11 @@ def _verify_ai_rmf(
         errors.append(
             "subcategory-evidence.json: window_claim must be empty, unmatched, or evidenced"
         )
+    mapping_sha256 = doc.get("mapping_sha256")
+    if not isinstance(mapping_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", mapping_sha256):
+        errors.append(
+            "subcategory-evidence.json: mapping_sha256 must be 64 lowercase hex characters"
+        )
     rows = doc.get("rows")
     if not isinstance(rows, list):
         errors.append("subcategory-evidence.json: rows missing")
@@ -843,8 +849,8 @@ def _verify_ai_rmf(
         if not isinstance(cited, list):
             errors.append(f"{row_id}: chain_entry_hashes is not a list")
             continue
-        if row.get("verdict") == "Not-covered" and cited:
-            errors.append(f"{row_id}: Not-covered row claims chain evidence")
+        if row.get("verdict") in {"Not-covered", "Partial"} and (cited or row.get("evidenced")):
+            errors.append(f"{row_id}: {row.get('verdict')} row claims chain evidence")
         if claim in {"empty", "unmatched"} and (cited or row.get("evidenced")):
             errors.append(f"{row_id}: {claim} window must not claim chain evidence")
         if row.get("evidenced"):
