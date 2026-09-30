@@ -131,7 +131,10 @@ def orphan_reason_is_valid(reason: str, *, today: date | None = None) -> bool:
     match = _REMOVE_BY_REASON_RE.fullmatch(reason)
     if match is None:
         return False
-    deadline = date.fromisoformat(match.group(1))
+    try:
+        deadline = date.fromisoformat(match.group(1))
+    except ValueError:
+        return False
     as_of = today if today is not None else date.today()
     return deadline >= as_of
 
@@ -278,6 +281,7 @@ def test_orphan_reason_contract_rejects_free_text_and_elapsed_schedules() -> Non
     assert not orphan_reason_is_valid("")
     assert not orphan_reason_is_valid("4912")
     assert not orphan_reason_is_valid("remove-by:2020-01-01", today=date(2026, 9, 14))
+    assert not orphan_reason_is_valid("remove-by:2026-13-45", today=date(2026, 9, 14))
 
 
 def test_no_new_orphan_security_modules() -> None:
