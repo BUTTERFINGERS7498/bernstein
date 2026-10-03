@@ -197,6 +197,10 @@ What it does when called for a run:
   journal head, and appending to it would make `bernstein seal` refuse
   the run.
 
+`bernstein runs helpers <run-id>` lists a run's records (`--json` for
+machine-readable rows). It leaves out any row whose record hash no
+longer recomputes.
+
 ## TUI integration
 
 The TUI's `WorktreeListPanel` refreshes the same classifier output

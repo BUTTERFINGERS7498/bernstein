@@ -7,7 +7,9 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
+from click.testing import CliRunner
 
+from bernstein.cli.commands.runs_cmd import runs_group
 from bernstein.core.persistence.cas_store import CASStore
 from bernstein.core.replay.journal import EventJournal, run_journal_path
 from bernstein.core.worktrees.run_helpers import (
@@ -226,3 +228,34 @@ def test_edited_sidecar_row_is_not_read_back(tmp_path: Path) -> None:
     sidecar.write_text(json.dumps(row) + "\n", encoding="utf-8")
 
     assert read_run_helper_records(tmp_path / ".sdd", RUN_ID) == []
+
+
+def test_runs_helpers_lists_captured_records(tmp_path: Path) -> None:
+    worktree = _worktree(tmp_path, {"repro.py": b"pass\n"})
+    _journal(
+        tmp_path,
+        ("file_create", {"path": "repro.py"}),
+        ("file_execute", {"path": "repro.py"}),
+    )
+    [record] = capture_helpers_for_run(tmp_path, worktree, RUN_ID)
+
+    result = CliRunner().invoke(runs_group, ["helpers", RUN_ID, "--workdir", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["run_id"] == RUN_ID
+    assert payload["helpers"] == [{**record.to_dict(), "record_hash": record.record_hash}]
+    assert payload["helpers"][0]["exit_codes"] == [None]
+
+
+def test_runs_helpers_with_nothing_recorded(tmp_path: Path) -> None:
+    result = CliRunner().invoke(runs_group, ["helpers", RUN_ID, "--workdir", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "No run helpers recorded" in result.output
+
+
+def test_runs_helpers_refuses_an_unsafe_run_id(tmp_path: Path) -> None:
+    result = CliRunner().invoke(runs_group, ["helpers", "../escape", "--workdir", str(tmp_path)])
+
+    assert result.exit_code == 2
