@@ -45,6 +45,7 @@ REASON_UNKNOWN_EVIDENCE_CLASS = "unknown_evidence_class"
 REASON_ADVANCED = "advanced"
 REASON_EXHAUSTED = "ladder_exhausted"
 REASON_BUDGET_STOP = "escalation_budget_exhausted"
+REASON_BUDGET_UNPRICED = "escalation_budget_unpriced"
 REASON_MONOTONICITY = "monotonicity_violation"
 REASON_EMPTY_LADDER = "empty_ladder"
 REASON_STEP_OUT_OF_RANGE = "step_out_of_range"
@@ -106,15 +107,17 @@ class LadderAdvanceInput:
     ``current_step`` is the 0-based index of the step that just failed.
     ``spend_usd`` / ``estimated_next_step_usd`` consult the existing cost
     surface; when ``escalation_budget_usd`` is set, climbing past it stops
-    with :data:`REASON_BUDGET_STOP`.
+    with :data:`REASON_BUDGET_STOP`. ``None`` means the figure is unknown:
+    with a budget set the climb stops with :data:`REASON_BUDGET_UNPRICED`
+    rather than pricing the unknown at zero.
     """
 
     ladder: tuple[LadderStep, ...]
     current_step: int
     evidence: FailureEvidence | None
     escalation_budget_usd: float | None = None
-    spend_usd: float = 0.0
-    estimated_next_step_usd: float = 0.0
+    spend_usd: float | None = 0.0
+    estimated_next_step_usd: float | None = 0.0
     policy_version: int = LADDER_POLICY_VERSION
     attempts_on_step: int = 1
 
@@ -333,13 +336,18 @@ def decide_ladder_advance(inp: LadderAdvanceInput) -> LadderDecision:
         )
 
     if inp.escalation_budget_usd is not None:
-        projected = inp.spend_usd + inp.estimated_next_step_usd
-        if projected > inp.escalation_budget_usd:
+        if inp.spend_usd is None or inp.estimated_next_step_usd is None:
+            stop_reason: str | None = REASON_BUDGET_UNPRICED
+        elif inp.spend_usd + inp.estimated_next_step_usd > inp.escalation_budget_usd:
+            stop_reason = REASON_BUDGET_STOP
+        else:
+            stop_reason = None
+        if stop_reason is not None:
             return LadderDecision(
                 kind="budget_stop",
                 from_step=from_step,
                 to_step=None,
-                reason=REASON_BUDGET_STOP,
+                reason=stop_reason,
                 evidence_class=evidence.evidence_class,
                 evidence_digest=digest,
                 policy_version=version,
@@ -376,8 +384,6 @@ def apply_monotonic_step(*, current_step: int, decision: LadderDecision) -> int:
 
 LADDER_STEP_METADATA_KEY = "escalation_ladder_step"
 LADDER_ATTEMPTS_METADATA_KEY = "escalation_ladder_attempts"
-FAILURE_EVIDENCE_CLASS_METADATA_KEY = "failure_evidence_class"
-FAILURE_EVIDENCE_DIGEST_METADATA_KEY = "failure_evidence_digest"
 
 
 @dataclass(frozen=True)
@@ -385,23 +391,38 @@ class RetryModelPatch:
     """Model and context mutation for one retry-task patch.
 
     ``model is None`` means the patch must not set ``model``. An unset
-    ladder leaves ``metadata_updates`` empty and, when the cascade named
-    one, puts that fallback in ``model`` — today's one-hop, unchanged.
+    ladder leaves ``ladder_step`` and ``ladder_attempts`` unset and, when
+    the cascade named one, puts that fallback in ``model``. That is
+    today's one-hop, unchanged.
     """
 
     model: str | None
     cli: str | None
     escalation_context: str | None
-    metadata_updates: dict[str, Any]
+    ladder_step: int | None
+    ladder_attempts: int | None
     decision: LadderDecision | None
 
 
-def evidence_from_task_metadata(metadata: Mapping[str, Any] | None) -> FailureEvidence | None:
-    """Read the failure-evidence reference the run already stored on the task."""
-    if not isinstance(metadata, Mapping):
+def evidence_from_chain(chain: Any, task_id: str) -> FailureEvidence | None:
+    """Resolve the failure evidence a failure path recorded for *task_id*.
+
+    Reads the latest ``escalation.ladder_failure_evidence`` event for the
+    task from a chain that verifies. A chain that fails verification, or
+    has no such event, yields ``None`` and the hop is refused. Task
+    metadata is never consulted: any API client can write it.
+    """
+    from bernstein.core.security.audit_chain import EVENT_ESCALATION_LADDER_FAILURE_EVIDENCE
+
+    ok, _errors, events = chain.verify_and_query(
+        event_type=EVENT_ESCALATION_LADDER_FAILURE_EVIDENCE,
+        resource_id=task_id,
+    )
+    if not ok or not events:
         return None
-    evidence_class = metadata.get(FAILURE_EVIDENCE_CLASS_METADATA_KEY)
-    digest = metadata.get(FAILURE_EVIDENCE_DIGEST_METADATA_KEY)
+    details: dict[str, Any] = dict(events[-1].details or {})
+    evidence_class = details.get("evidence_class")
+    digest = details.get("evidence_digest")
     if not isinstance(evidence_class, str) or not evidence_class.strip():
         return None
     if not isinstance(digest, str) or not digest.strip():
@@ -420,6 +441,12 @@ def _role_policy_mapping(role_model_policy: object, role: str) -> dict[str, Any]
 
 
 def _persisted_step(metadata: Mapping[str, Any] | None, ladder_len: int) -> int:
+    """Persisted rung, clamped into the current ladder.
+
+    A step past the end (the operator shortened the ladder mid-run) clamps
+    to the top rung on purpose: the task keeps the strongest configured
+    model and the next failure exhausts, rather than resetting to rung 0.
+    """
     if not isinstance(metadata, Mapping) or ladder_len <= 0:
         return 0
     raw = metadata.get(LADDER_STEP_METADATA_KEY)
@@ -474,10 +501,10 @@ def plan_retry_model_patch(
     task_model: str | None,
     task_metadata: Mapping[str, Any] | None,
     legacy_fallback_model: str | None,
-    evidence: FailureEvidence | None = None,
-    spend_usd: float = 0.0,
+    resolve_evidence: Callable[[], FailureEvidence | None] | None = None,
+    spend_usd: float | None = None,
     estimated_next_step_usd: float | None = None,
-    estimate_model_usd: Callable[[str], float] | None = None,
+    estimate_model_usd: Callable[[str], float | None] | None = None,
 ) -> RetryModelPatch:
     """Decide the model stamped on a retry patch.
 
@@ -485,6 +512,11 @@ def plan_retry_model_patch(
     cascade one-hop). A resolved ladder never uses that one-hop. The
     advance reads :func:`decide_ladder_advance`; the model string on an
     advance is the next step's ``model`` with no rewriting.
+
+    ``task_metadata`` supplies only the ladder position. Evidence comes
+    from *resolve_evidence* (see :func:`evidence_from_chain`), called only
+    when a ladder is configured. ``spend_usd`` and the next step's estimate
+    are ``None`` when unknown; an estimator that raises counts as unknown.
     """
     entry = _role_policy_mapping(role_model_policy, role)
     ladder: tuple[LadderStep, ...] | None = None
@@ -503,19 +535,21 @@ def plan_retry_model_patch(
             model=legacy_fallback_model or None,
             cli=None,
             escalation_context=None,
-            metadata_updates={},
+            ladder_step=None,
+            ladder_attempts=None,
             decision=None,
         )
 
-    if evidence is None:
-        evidence = evidence_from_task_metadata(task_metadata)
+    evidence = resolve_evidence() if resolve_evidence is not None else None
     current = current_ladder_step(task_metadata, ladder, task_model)
     attempts = _attempts_on_step(task_metadata)
     estimated = estimated_next_step_usd
     if estimated is None and estimate_model_usd is not None and current < len(ladder) - 1:
-        estimated = float(estimate_model_usd(ladder[current + 1].model))
-    if estimated is None:
-        estimated = 0.0
+        try:
+            quoted = estimate_model_usd(ladder[current + 1].model)
+        except Exception:
+            quoted = None
+        estimated = float(quoted) if quoted is not None else None
 
     decision = decide_ladder_advance(
         LadderAdvanceInput(
@@ -528,16 +562,13 @@ def plan_retry_model_patch(
             attempts_on_step=attempts,
         )
     )
-    floor_meta = {
-        LADDER_STEP_METADATA_KEY: current,
-        LADDER_ATTEMPTS_METADATA_KEY: attempts,
-    }
     if decision.kind == "refuse":
         return RetryModelPatch(
             model=None,
             cli=None,
             escalation_context=None,
-            metadata_updates=floor_meta,
+            ladder_step=current,
+            ladder_attempts=attempts,
             decision=decision,
         )
     if decision.kind in {"advance", "exhaust"} and attempts < ladder[current].max_attempts:
@@ -545,10 +576,8 @@ def plan_retry_model_patch(
             model=None,
             cli=None,
             escalation_context=None,
-            metadata_updates={
-                LADDER_STEP_METADATA_KEY: current,
-                LADDER_ATTEMPTS_METADATA_KEY: attempts + 1,
-            },
+            ladder_step=current,
+            ladder_attempts=attempts + 1,
             decision=None,
         )
     if decision.kind == "advance" and decision.to_step is not None:
@@ -558,17 +587,16 @@ def plan_retry_model_patch(
             model=next_step.model,
             cli=next_step.adapter,
             escalation_context=decision.escalation_context,
-            metadata_updates={
-                LADDER_STEP_METADATA_KEY: nxt,
-                LADDER_ATTEMPTS_METADATA_KEY: 1,
-            },
+            ladder_step=nxt,
+            ladder_attempts=1,
             decision=decision,
         )
     return RetryModelPatch(
         model=None,
         cli=None,
         escalation_context=None,
-        metadata_updates=floor_meta,
+        ladder_step=current,
+        ladder_attempts=attempts,
         decision=decision,
     )
 
@@ -577,13 +605,14 @@ def apply_retry_ladder_to_patch(
     *,
     patch_body: dict[str, Any],
     plan: RetryModelPatch,
-    base_metadata: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Return the retry patch with the ladder decision applied.
 
     The same inputs produce the same mapping. When the decision advances,
     ``escalation_context`` is one ``meta_messages`` entry and ``model`` is
-    the next step's model id, unmodified.
+    the next step's model id, unmodified. The ladder position travels as
+    ``escalation_ladder_step`` / ``escalation_ladder_attempts``; the body
+    never carries free-form ``metadata``.
     """
     body = dict(patch_body)
     if plan.escalation_context:
@@ -595,10 +624,10 @@ def apply_retry_ladder_to_patch(
         body["model"] = plan.model
     if plan.cli:
         body["cli"] = plan.cli
-    if plan.metadata_updates:
-        merged = dict(base_metadata or {})
-        merged.update(plan.metadata_updates)
-        body["metadata"] = merged
+    if plan.ladder_step is not None:
+        body["escalation_ladder_step"] = plan.ladder_step
+    if plan.ladder_attempts is not None:
+        body["escalation_ladder_attempts"] = plan.ladder_attempts
     return body
 
 
@@ -674,14 +703,13 @@ __all__ = [
     "EVIDENCE_DEGRADED_TERMINAL_OUTPUT",
     "EVIDENCE_LOOP_VERDICT",
     "EVIDENCE_VERIFICATION_FAILURE",
-    "FAILURE_EVIDENCE_CLASS_METADATA_KEY",
-    "FAILURE_EVIDENCE_DIGEST_METADATA_KEY",
     "LADDER_ATTEMPTS_METADATA_KEY",
     "LADDER_POLICY_VERSION",
     "LADDER_STEP_METADATA_KEY",
     "QUALIFYING_EVIDENCE_CLASSES",
     "REASON_ADVANCED",
     "REASON_BUDGET_STOP",
+    "REASON_BUDGET_UNPRICED",
     "REASON_EMPTY_LADDER",
     "REASON_EXHAUSTED",
     "REASON_MISSING_EVIDENCE",
@@ -697,7 +725,7 @@ __all__ = [
     "apply_retry_ladder_to_patch",
     "current_ladder_step",
     "decide_ladder_advance",
-    "evidence_from_task_metadata",
+    "evidence_from_chain",
     "format_escalation_context",
     "hop_record_digest",
     "plan_retry_model_patch",

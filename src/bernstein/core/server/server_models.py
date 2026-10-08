@@ -433,10 +433,15 @@ class TaskBlockRequest(BaseModel):
 class TaskPatchRequest(BaseModel):
     """Body for PATCH /tasks/{task_id} - manager corrections.
 
-    ``meta_messages``, ``metadata``, and ``cli`` carry an evidence-gated
-    escalation hop (issue #4855): the context line, the persisted ladder
-    step, and the step's adapter. ``model`` is the step's model id,
-    unmodified.
+    ``meta_messages``, ``cli``, ``escalation_ladder_step`` and
+    ``escalation_ladder_attempts`` carry an evidence-gated escalation hop
+    (issue #4855): the context line, the step's adapter, and the ladder
+    position. ``model`` is the step's model id, unmodified.
+
+    There is deliberately no free-form ``metadata`` here. The ladder's
+    evidence is resolved from the audit chain and its spend from the cost
+    ledger, so no PATCH body can fabricate either; the two position fields
+    grant nothing ``model`` does not already grant.
     """
 
     role: str | None = None
@@ -444,7 +449,8 @@ class TaskPatchRequest(BaseModel):
     model: str | None = None
     cli: str | None = Field(default=None, max_length=_MAX_SHORT_STR_LEN)
     meta_messages: list[str] | None = Field(default=None, max_length=_MAX_LIST_LEN)
-    metadata: dict[str, Any] | None = None
+    escalation_ladder_step: int | None = Field(default=None, ge=0, le=_MAX_LIST_LEN)
+    escalation_ladder_attempts: int | None = Field(default=None, ge=1, le=_MAX_LIST_LEN)
 
     @field_validator("meta_messages")
     @classmethod
@@ -455,11 +461,6 @@ class TaskPatchRequest(BaseModel):
             if len(msg) > _MAX_META_MESSAGE_LEN:
                 raise ValueError(f"meta_messages entry exceeds {_MAX_META_MESSAGE_LEN} chars")
         return value
-
-    @field_validator("metadata")
-    @classmethod
-    def _cap_metadata(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        return _enforce_dict_size(value, field_name="metadata")
 
 
 class TaskProgressRequest(BaseModel):
